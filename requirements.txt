@@ -1,0 +1,2 @@
+# Everything else is the Python standard library (tkinter included).
+send2trash>=1.8      # optional: nicer Recycle Bin support (a built-in Windows fallback exists)

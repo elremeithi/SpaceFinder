@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
@@ -18,3 +20,11 @@ jobs:
         with:
           name: SpaceFinder-exe
           path: dist/SpaceFinder.exe
+      - name: Publish as "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/SpaceFinder.exe --title "Space Finder (latest build)" \
+            --notes "Download SpaceFinder.exe below. Single file, no install, works fully offline. Built from ${GITHUB_SHA::7}."

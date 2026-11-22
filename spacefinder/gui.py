@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import APP_NAME, __version__
@@ -27,6 +28,31 @@ MUTED = "#64748b"
 CHECK, UNCHECK = "☑", "☐"
 
 SETTINGS_FILE = app_data_dir() / "settings.json"
+
+# Interface size: multiplier on top of the monitor's real DPI scaling.
+ZOOM_LEVELS = {"Normal (100%)": 1.0, "Large (125%)": 1.25, "Larger (150%)": 1.5,
+               "Huge (175%)": 1.75, "Maximum (200%)": 2.0}
+UI_SCALE = 1.0          # set by App: (screen DPI / 96) * zoom
+
+
+def px(n: float) -> int:
+    """Scale a pixel size to the current DPI + interface size."""
+    return int(round(n * UI_SCALE))
+
+
+def enable_dpi_awareness() -> None:
+    """Must run BEFORE the Tk window exists, or Tk measures the screen at 96 DPI
+    and everything renders tiny on high-resolution displays."""
+    if not IS_WINDOWS:
+        return
+    import ctypes
+    for call in (lambda: ctypes.windll.shcore.SetProcessDpiAwareness(1),
+                 lambda: ctypes.windll.user32.SetProcessDPIAware()):
+        try:
+            call()
+            return
+        except Exception:
+            continue
 DEFAULT_SETTINGS = {
     "engine": "builtin",          # builtin | ollama
     "ollama_model": "llama3.2:3b",
@@ -35,6 +61,7 @@ DEFAULT_SETTINGS = {
     "auto_review": True,
     "deep_zip": False,
     "skip_shortcuts": True,
+    "ui_zoom": 1.25,
 }
 
 
@@ -150,10 +177,10 @@ class CheckTree(ttk.Frame):
         self.cols = [c[0] for c in columns]
         self.tree = ttk.Treeview(self, columns=self.cols, show="tree headings" if tree_mode else "headings",
                                  selectmode="extended")
-        self.tree.column("#0", width=28 if not tree_mode else 260, stretch=False)
+        self.tree.column("#0", width=px(28) if not tree_mode else px(260), stretch=False)
         for key, title, width in columns:
             self.tree.heading(key, text=title, command=lambda k=key: self.sort_by(k))
-            self.tree.column(key, width=width, anchor="w", stretch=key not in ("chk",))
+            self.tree.column(key, width=px(width), anchor="w", stretch=key not in ("chk",))
         vs = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
@@ -171,7 +198,7 @@ class CheckTree(ttk.Frame):
         self.tree.tag_configure("delete", foreground=BAD)
         self.tree.tag_configure("review", foreground=WARN)
         self.tree.tag_configure("keep", foreground=GOOD)
-        self.tree.tag_configure("group", font=("Segoe UI", 9, "bold"))
+        self.tree.tag_configure("group", font=("Segoe UI" if IS_WINDOWS else "TkDefaultFont", 10, "bold"))
 
     def clear(self):
         self.tree.delete(*self.tree.get_children())
@@ -361,7 +388,7 @@ class DashboardTab(ttk.Frame):
             row.pack(fill="x", pady=3)
             ttk.Label(row, text=d, width=6, style="Bold.TLabel").pack(side="left")
             pct = (total - free) / total * 100 if total else 0
-            bar = ttk.Progressbar(row, length=360, maximum=100, value=pct,
+            bar = ttk.Progressbar(row, length=px(360), maximum=100, value=pct,
                                   style="Red.Horizontal.TProgressbar" if pct > 90 else "Horizontal.TProgressbar")
             bar.pack(side="left", padx=8)
             ttk.Label(row, text=f"{human_size(free)} free of {human_size(total)}  ({pct:.0f}% used)").pack(side="left")
@@ -769,7 +796,7 @@ class SystemTab(ttk.Frame):
         self.rb_size = self.rb_count = 0
         ttk.Label(self, text="Windows junk, temporary files and the Recycle Bin. These are deleted permanently "
                              "(they are junk by definition). Files that are in use are skipped automatically.",
-                  foreground=MUTED, wraplength=900).pack(anchor="w")
+                  foreground=MUTED, wraplength=px(900)).pack(anchor="w")
         tb = toolbar(self)
         ttk.Button(tb, text="\U0001F50D Scan", style="Accent.TButton", command=self.scan).pack(side="left")
         ttk.Button(tb, text="Defaults", command=self.defaults).pack(side="left", padx=4)
@@ -869,6 +896,17 @@ class SettingsTab(ttk.Frame):
         super().__init__(nb, padding=16)
         self.app = app
         s = app.settings
+        ttk.Label(self, text="Interface size", style="H2.TLabel").pack(anchor="w")
+        zrow = ttk.Frame(self)
+        zrow.pack(anchor="w", pady=(4, 16))
+        cur = min(ZOOM_LEVELS, key=lambda k: abs(ZOOM_LEVELS[k] - float(s.get("ui_zoom", 1.25))))
+        self.zoom = tk.StringVar(value=cur)
+        ttk.Combobox(zrow, textvariable=self.zoom, values=list(ZOOM_LEVELS), state="readonly",
+                     width=18).pack(side="left")
+        ttk.Button(zrow, text="Apply (restarts app)", command=self.apply_zoom).pack(side="left", padx=8)
+        ttk.Label(zrow, text="Text, buttons and lists get bigger. Shortcut: Ctrl + / Ctrl -",
+                  foreground=MUTED).pack(side="left")
+
         ttk.Label(self, text="Smart engine (offline AI)", style="H2.TLabel").pack(anchor="w")
         self.engine = tk.StringVar(value=s["engine"])
         ttk.Radiobutton(self, text="Built-in Smart Engine - instant, no setup, works on any PC (recommended)",
@@ -902,6 +940,14 @@ class SettingsTab(ttk.Frame):
         ttk.Label(self, text=f"\n{APP_NAME} {__version__}  •  Settings: {SETTINGS_FILE}",
                   foreground=MUTED).pack(anchor="w")
 
+    def apply_zoom(self):
+        self.app.settings["ui_zoom"] = ZOOM_LEVELS[self.zoom.get()]
+        save_settings(self.app.settings)
+        if self.app.worker.busy:
+            messagebox.showinfo(APP_NAME, "Saved - the new size applies next time you open Space Finder.")
+            return
+        self.app.restart()
+
     def detect(self):
         try:
             models = ai.LocalLLM().list_models()
@@ -931,18 +977,13 @@ class SettingsTab(ttk.Frame):
 
 class App(tk.Tk):
     def __init__(self):
+        enable_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} - offline disk cleaner & organizer")
-        self.geometry("1180x760")
-        self.minsize(900, 560)
-        self.configure(bg=BG)
-        if IS_WINDOWS:
-            try:
-                import ctypes
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                pass
         self.settings = load_settings()
+        self._apply_scale()
+        self.title(f"{APP_NAME} - offline disk cleaner & organizer")
+        self._size_window()
+        self.configure(bg=BG)
         self._style()
 
         header = tk.Frame(self, bg=ACCENT)
@@ -968,8 +1009,72 @@ class App(tk.Tk):
         status.pack(fill="x", side="bottom")
         self.status = ttk.Label(status, text="Ready.", foreground=MUTED)
         self.status.pack(side="left", fill="x", expand=True)
-        self.pbar = ttk.Progressbar(status, mode="indeterminate", length=220)
+        self.pbar = ttk.Progressbar(status, mode="indeterminate", length=px(220))
         self.pbar.pack(side="right")
+        for seq, step in (("<Control-plus>", 1), ("<Control-equal>", 1), ("<Control-KP_Add>", 1),
+                          ("<Control-minus>", -1), ("<Control-KP_Subtract>", -1)):
+            self.bind_all(seq, lambda e, d=step: self.change_zoom(d))
+
+    def change_zoom(self, direction: int):
+        levels = sorted(ZOOM_LEVELS.values())
+        cur = float(self.settings.get("ui_zoom", 1.25))
+        idx = min(range(len(levels)), key=lambda i: abs(levels[i] - cur))
+        new = levels[max(0, min(len(levels) - 1, idx + direction))]
+        if new == cur:
+            return
+        name = next(k for k, v in ZOOM_LEVELS.items() if v == new)
+        if self.worker.busy:
+            return
+        if messagebox.askyesno(APP_NAME, f"Change interface size to {name}?\nThe app will restart."):
+            self.settings["ui_zoom"] = new
+            save_settings(self.settings)
+            self.restart()
+
+    def _apply_scale(self):
+        global UI_SCALE
+        try:
+            zoom = float(self.settings.get("ui_zoom", 1.25))
+        except (TypeError, ValueError):
+            zoom = 1.25
+        zoom = min(max(zoom, 0.75), 2.5)
+        dpi = self.winfo_fpixels("1i") or 96.0
+        UI_SCALE = dpi / 96.0 * zoom
+        # point-sized fonts follow tk scaling (pixels per point)
+        self.tk.call("tk", "scaling", dpi * zoom / 72.0)
+        family = "Segoe UI" if IS_WINDOWS else None
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+                     "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
+            try:
+                f = tkfont.nametofont(name)
+                f.configure(size=10, **({"family": family} if family else {}))
+            except tk.TclError:
+                pass
+        self.option_add("*TCombobox*Listbox.font", "TkDefaultFont")
+
+    def _size_window(self):
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = px(1180), px(760)
+        self.minsize(min(px(900), sw - 40), min(px(560), sh - 80))
+        if w > sw * 0.95 or h > sh * 0.9:
+            w, h = int(sw * 0.95), int(sh * 0.88)
+            self.geometry(f"{w}x{h}+{(sw - w) // 2}+10")
+            if IS_WINDOWS:
+                self.after(50, lambda: self.state("zoomed"))
+        else:
+            self.geometry(f"{w}x{h}+{(sw - w) // 2}+{max(10, (sh - h) // 3)}")
+
+    def restart(self):
+        """Relaunch the app (keeps admin rights) - used after changing the interface size."""
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable] + sys.argv[1:]
+        else:
+            cmd = [sys.executable] + sys.argv
+        try:
+            subprocess.Popen(cmd, close_fds=True)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Couldn't restart automatically: {e}\nPlease reopen the app.")
+            return
+        self.destroy()
 
     def _style(self):
         st = ttk.Style(self)
@@ -990,7 +1095,11 @@ class App(tk.Tk):
         st.configure("CardSub.TLabel", background=CARD, foreground=MUTED)
         st.configure("Accent.TButton", font=(base[0], 10, "bold"), foreground=ACCENT)
         st.configure("Danger.TButton", font=(base[0], 10, "bold"), foreground=BAD)
-        st.configure("Treeview", rowheight=24)
+        line = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        st.configure("Treeview", rowheight=line + px(8))
+        st.configure("Treeview.Heading", font=(base[0], 10, "bold"))
+        st.configure("TButton", padding=(px(10), px(5)))
+        st.configure("TNotebook.Tab", padding=(px(10), px(6)))
         st.configure("Red.Horizontal.TProgressbar", background=BAD)
 
     # ---- helpers used by tabs ----
